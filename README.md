@@ -49,7 +49,7 @@
 ![Jest](https://img.shields.io/badge/Jest-C21325?style=for-the-badge&logo=jest&logoColor=white)
 ![Cypress](https://img.shields.io/badge/Cypress-17202C?style=for-the-badge&logo=cypress&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Playwright-2EAD33?style=for-the-badge&logo=playwright&logoColor=white)
-## 📈 GitHub Activity
 
-![Streak](https://streak-stats.demolab.com/?user=AbdelKarim-Ensi&theme=dark&hide_border=false)
+<br>
 
+![Contribution Graph](./assets/contribution-graph.svg)
