@@ -21,8 +21,20 @@ const COLORS = {
   THIRD_QUARTER: "#26a641",
   FOURTH_QUARTER: "#39d353",
 };
+const ORDER = ["NONE", "FIRST_QUARTER", "SECOND_QUARTER", "THIRD_QUARTER", "FOURTH_QUARTER"];
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+
+function levelOf(day, max) {
+  const l = String(day.contributionLevel || "").toUpperCase();
+  if (COLORS[l]) return l;
+  if (!day.contributionCount) return "NONE";
+  const r = day.contributionCount / max;
+  if (r > 0.75) return "FOURTH_QUARTER";
+  if (r > 0.5) return "THIRD_QUARTER";
+  if (r > 0.25) return "SECOND_QUARTER";
+  return "FIRST_QUARTER";
+}
 
 (async () => {
   const res = await fetch("https://api.github.com/graphql", {
@@ -35,6 +47,7 @@ const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, s
 
   const cal = json.data.user.contributionsCollection.contributionCalendar;
   const weeks = cal.weeks;
+  const max = Math.max(1, ...weeks.flatMap((w) => w.contributionDays.map((d) => d.contributionCount)));
 
   const CELL = 10, STEP = 13;
   const X0 = 46, Y0 = 80;
@@ -45,7 +58,6 @@ const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, s
   svg += `<rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="6" fill="#0d1117" stroke="#30363d"/>`;
   svg += `<text x="16" y="36" font-size="20" fill="#e6edf3">${cal.totalContributions} contributions in the last year</text>`;
 
-  // Month labels
   const labels = [];
   let prev = -1;
   weeks.forEach((w, i) => {
@@ -57,26 +69,24 @@ const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, s
     svg += `<text x="${X0 + i * STEP}" y="${Y0 - 10}" font-size="12" fill="#e6edf3">${MONTHS[m]}</text>`;
   });
 
-  // Day labels
   [["Mon", 1], ["Wed", 3], ["Fri", 5]].forEach(([t, r]) => {
     svg += `<text x="12" y="${Y0 + r * STEP + 9}" font-size="12" fill="#e6edf3">${t}</text>`;
   });
 
-  // Cells
   weeks.forEach((w, i) => {
     w.contributionDays.forEach((d) => {
-      svg += `<rect x="${X0 + i * STEP}" y="${Y0 + d.weekday * STEP}" width="${CELL}" height="${CELL}" rx="2" fill="${COLORS[d.contributionLevel]}"><title>${d.contributionCount} contributions on ${d.date}</title></rect>`;
+      const color = COLORS[levelOf(d, max)];
+      svg += `<rect x="${X0 + i * STEP}" y="${Y0 + d.weekday * STEP}" width="${CELL}" height="${CELL}" rx="2" fill="${color}" style="fill:${color}"><title>${d.contributionCount} contributions on ${d.date}</title></rect>`;
     });
   });
 
-  // Legend
   const LY = Y0 + 7 * STEP + 34;
   const squaresEnd = W - 16 - 38;
   const squaresStart = squaresEnd - 5 * STEP;
   svg += `<text x="${W - 16}" y="${LY + 9}" font-size="12" fill="#7d8590" text-anchor="end">More</text>`;
   svg += `<text x="${squaresStart - 6}" y="${LY + 9}" font-size="12" fill="#7d8590" text-anchor="end">Less</text>`;
-  Object.values(COLORS).forEach((c, k) => {
-    svg += `<rect x="${squaresStart + k * STEP}" y="${LY}" width="${CELL}" height="${CELL}" rx="2" fill="${c}"/>`;
+  ORDER.forEach((k, idx) => {
+    svg += `<rect x="${squaresStart + idx * STEP}" y="${LY}" width="${CELL}" height="${CELL}" rx="2" fill="${COLORS[k]}"/>`;
   });
   svg += `<text x="16" y="${LY + 9}" font-size="12" fill="#7d8590">Learn how we count contributions</text>`;
 
