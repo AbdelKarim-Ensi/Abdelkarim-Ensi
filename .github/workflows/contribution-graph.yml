@@ -1,36 +1,218 @@
-name: Update Contribution Graph
+#!/usr/bin/env node
+'use strict';
 
-on:
-  schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "scripts/contribution-graph.js"
+/**
+ * Génère assets/contribution-graph.svg (calendrier de contributions GitHub, thème dark).
+ * Node 20+, fetch natif, aucune dépendance.
+ * Variables d'environnement : GH_USER, GH_TOKEN
+ */
 
-permissions:
-  contents: write
+const fs = require('node:fs');
+const path = require('node:path');
 
-jobs:
-  update:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+const GH_USER = process.env.GH_USER;
+const GH_TOKEN = process.env.GH_TOKEN;
+const OUTPUT = path.join(__dirname, '..', 'assets', 'contribution-graph.svg');
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
+if (!GH_USER || !GH_TOKEN) {
+  console.error('Erreur : les variables GH_USER et GH_TOKEN sont requises.');
+  process.exit(1);
+}
 
-      - name: Generate graph
-        run: node scripts/contribution-graph.js
-        env:
-          GH_USER: ${{ github.repository_owner }}
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+// ---------- Constantes de rendu (identiques à GitHub) ----------
+const CELL = 10;
+const STEP = 13;
+const RADIUS = 2;
+const COLORS = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353'];
+const BG = '#0d1117';
+const BORDER = '#30363d';
+const TEXT = '#e6edf3';
+const MUTED = '#8b949e';
+const FONT = '-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif';
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-      - name: Commit
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/contribution-graph.svg
-          git diff --cached --quiet || (git commit -m "chore: update contribution graph" && git push)
+const LEVELS = {
+  NONE: 0,
+  FIRST_QUARTILE: 1,
+  SECOND_QUARTILE: 2,
+  THIRD_QUARTILE: 3,
+  FOURTH_QUARTILE: 4,
+};
+
+const QUERY = `
+query($login: String!) {
+  user(login: $login) {
+    contributionsCollection {
+      contributionCalendar {
+        totalContributions
+        weeks {
+          firstDay
+          contributionDays {
+            date
+            contributionCount
+            contributionLevel
+            weekday
+          }
+        }
+      }
+    }
+  }
+}`;
+
+async function fetchCalendar() {
+  const res = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: {
+      Authorization: `bearer ${GH_TOKEN}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'contribution-graph-script',
+    },
+    body: JSON.stringify({ query: QUERY, variables: { login: GH_USER } }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`API GitHub : HTTP ${res.status} ${res.statusText}`);
+  }
+  const json = await res.json();
+  if (json.errors?.length) {
+    throw new Error(`API GitHub : ${json.errors.map((e) => e.message).join(' | ')}`);
+  }
+  const calendar = json.data?.user?.contributionsCollection?.contributionCalendar;
+  if (!calendar) {
+    throw new Error(`Aucun calendrier trouvé pour l'utilisateur "${GH_USER}".`);
+  }
+  return calendar;
+}
+
+// Niveau : valeur GitHub si reconnue, sinon recalcul depuis le ratio count / max
+function resolveLevel(day, max) {
+  const known = LEVELS[day.contributionLevel];
+  if (known !== undefined) return known;
+  const count = Number(day.contributionCount) || 0;
+  if (count <= 0 || max <= 0) return 0;
+  const ratio = count / max;
+  if (ratio <= 0.25) return 1;
+  if (ratio <= 0.5) return 2;
+  if (ratio <= 0.75) return 3;
+  return 4;
+}
+
+const esc = (s) =>
+  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function buildSvg(calendar) {
+  const weeks = calendar.weeks;
+  const max = Math.max(0, ...weeks.flatMap((w) => w.contributionDays.map((d) => d.contributionCount)));
+
+  const padX = 20;
+  const labelW = 32;
+  const gridX = padX + labelW;
+  const gridY = 66;
+  const gridW = weeks.length * STEP - (STEP - CELL);
+  const gridH = 7 * STEP - (STEP - CELL);
+  const width = gridX + gridW + padX;
+  const legendY = gridY + gridH + 26;
+  const height = legendY + 24;
+
+  const out = [];
+  out.push(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(
+      `${calendar.totalContributions} contributions in the last year`,
+    )}">`,
+  );
+  out.push(
+    `<rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="6" ry="6" fill="${BG}" stroke="${BORDER}" style="fill:${BG};stroke:${BORDER}"/>`,
+  );
+
+  // Titre
+  const total = Number(calendar.totalContributions).toLocaleString('en-US');
+  out.push(
+    `<text x="${padX}" y="30" font-family='${FONT}' font-size="16" font-weight="600" fill="${TEXT}" style="fill:${TEXT}">${esc(
+      total,
+    )} contributions in the last year</text>`,
+  );
+
+  // Labels des mois
+  const monthLabels = [];
+  let prevMonth = -1;
+  weeks.forEach((week, i) => {
+    const first = week.contributionDays[0];
+    if (!first) return;
+    const month = new Date(`${first.date}T00:00:00Z`).getUTCMonth();
+    if (month !== prevMonth) {
+      monthLabels.push({ i, month });
+      prevMonth = month;
+    }
+  });
+  monthLabels.forEach((label, idx) => {
+    const next = monthLabels[idx + 1];
+    if (next && next.i - label.i < 3) return; // évite les chevauchements (ex. premier mois partiel)
+    const x = gridX + label.i * STEP;
+    out.push(
+      `<text x="${x}" y="${gridY - 8}" font-family='${FONT}' font-size="12" fill="${MUTED}" style="fill:${MUTED}">${MONTHS[label.month]}</text>`,
+    );
+  });
+
+  // Labels des jours
+  [
+    [1, 'Mon'],
+    [3, 'Wed'],
+    [5, 'Fri'],
+  ].forEach(([wd, name]) => {
+    out.push(
+      `<text x="${padX}" y="${gridY + wd * STEP + 9}" font-family='${FONT}' font-size="12" fill="${MUTED}" style="fill:${MUTED}">${name}</text>`,
+    );
+  });
+
+  // Cellules
+  weeks.forEach((week, i) => {
+    week.contributionDays.forEach((day) => {
+      const color = COLORS[resolveLevel(day, max)];
+      const x = gridX + i * STEP;
+      const y = gridY + day.weekday * STEP;
+      const n = day.contributionCount;
+      out.push(
+        `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" rx="${RADIUS}" ry="${RADIUS}" fill="${color}" style="fill:${color}"><title>${n} contribution${
+          n === 1 ? '' : 's'
+        } on ${esc(day.date)}</title></rect>`,
+      );
+    });
+  });
+
+  // Légende gauche
+  out.push(
+    `<text x="${gridX}" y="${legendY + 10}" font-family='${FONT}' font-size="12" fill="${MUTED}" style="fill:${MUTED}">Learn how we count contributions</text>`,
+  );
+
+  // Légende droite : Less ▪▪▪▪▪ More
+  const rightEdge = gridX + gridW;
+  out.push(
+    `<text x="${rightEdge}" y="${legendY + 10}" text-anchor="end" font-family='${FONT}' font-size="12" fill="${MUTED}" style="fill:${MUTED}">More</text>`,
+  );
+  const squaresEnd = rightEdge - 34;
+  const squaresStart = squaresEnd - (5 * STEP - (STEP - CELL));
+  COLORS.forEach((color, i) => {
+    out.push(
+      `<rect x="${squaresStart + i * STEP}" y="${legendY}" width="${CELL}" height="${CELL}" rx="${RADIUS}" ry="${RADIUS}" fill="${color}" style="fill:${color}"/>`,
+    );
+  });
+  out.push(
+    `<text x="${squaresStart - 6}" y="${legendY + 10}" text-anchor="end" font-family='${FONT}' font-size="12" fill="${MUTED}" style="fill:${MUTED}">Less</text>`,
+  );
+
+  out.push('</svg>');
+  return out.join('\n') + '\n';
+}
+
+(async () => {
+  try {
+    const calendar = await fetchCalendar();
+    const svg = buildSvg(calendar);
+    fs.mkdirSync(path.dirname(OUTPUT), { recursive: true });
+    fs.writeFileSync(OUTPUT, svg, 'utf8');
+    console.log(`OK : ${calendar.totalContributions} contributions -> ${path.relative(process.cwd(), OUTPUT)}`);
+  } catch (err) {
+    console.error(err.message || err);
+    process.exit(1);
+  }
+})();
